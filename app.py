@@ -1,12 +1,14 @@
 from flask import Flask, request, jsonify, redirect, url_for
 import json
-from sampler import run_test, run_sampler, prime_preservative_pumps
+from sampler import run_test, run_sampler, prime_preservative_pumps, run_pump
 import os
-from hardware.scheduler import schedule_wakeup
+from hardware.scheduler import schedule_wakeup, WITTY_PI_DIR
+from hardware.motors import UNITS
 import threading
 from hardware.led import set_led
 
-WITTY_PI_DIR = "/home/ore653/wittypi"
+SUB_MAX_SEC = 3600
+PRES_MAX_SEC = 20
 
 set_led("on")
 
@@ -74,6 +76,15 @@ def home():
     pres_duration = config.get("pres_duration", 5.0)
     sample_time = config.get("sample_time", "02:00")
 
+    def pump_forms(kind, default, limit):
+        return "".join(f"""
+        <form method="POST" action="/pump" style="display:inline-block; margin:4px;">
+            <input type="hidden" name="pump" value="{kind}{unit}">
+            <label>{unit}</label>
+            <input type="number" step=".1" min=".1" max="{limit}" name="duration" value="{default}" style="width:70px;">
+            <input type="submit" value="Run">
+        </form>""" for unit in UNITS)
+
     return f"""
     <h1>eDNA Sampler Control Panel</h1>
 
@@ -108,6 +119,12 @@ def home():
     <form method="POST" action="/stop">
         <input type="submit" value="Stop Priming/Test">
     </form>
+
+    <h2>Sub Pumps (sec)</h2>
+    {pump_forms("sub", sample_duration, SUB_MAX_SEC)}
+
+    <h2>Preservative Pumps (sec, max {PRES_MAX_SEC})</h2>
+    {pump_forms("pres", pres_duration, PRES_MAX_SEC)}
 
     <br>
 
@@ -180,6 +197,41 @@ def test():
     return redirect(url_for("home"))
 
 
+@app.route("/pump", methods=["POST"])
+def pump():
+
+    if test_state["running"]:
+        return "Already running.<br><a href='/'>Back</a>"
+
+    name = request.form["pump"]
+    kind, unit = name[:-2], name[-2:]
+    limit = SUB_MAX_SEC if kind == "sub" else PRES_MAX_SEC
+
+    if kind not in ("sub", "pres") or unit not in UNITS:
+        return "Unknown pump.<br><a href='/'>Back</a>"
+
+    duration = float(request.form["duration"])
+
+    if not 0 < duration <= limit:
+        return f"Run time must be between 0 and {limit} sec.<br><a href='/'>Back</a>"
+
+    def background_run():
+        try:
+            test_state["running"] = True
+            test_state["stop"] = False
+
+            run_pump(name, duration, test_state)
+
+        finally:
+            test_state["running"] = False
+            test_state["stop"] = False
+
+    thread = threading.Thread(target=background_run, daemon=True)
+    thread.start()
+
+    return redirect(url_for("home"))
+
+
 @app.route("/stop", methods=["POST"])
 def stop():
     test_state["stop"] = True
@@ -189,15 +241,19 @@ def stop():
 @app.route("/arm", methods=["POST"])
 def arm():
     config = load_config()
+
+    try:
+        schedule_wakeup(
+            config["sample_time"],
+            config["sample_duration"],
+            config["pres_duration"],
+            config["interval_min"]
+        )
+    except ValueError as e:
+        return f"{e}<br><a href='/'>Back</a>"
+
     config["armed"] = True
     save_config(config)
-
-    schedule_wakeup(
-        config["sample_time"],
-        config["sample_duration"],
-        config["pres_duration"],
-        config["interval_min"]
-    )
 
     return "System armed for next scheduled sample.<br><a href='/'>Back</a>"
 
