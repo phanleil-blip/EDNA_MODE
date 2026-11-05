@@ -2,7 +2,7 @@ import RPi.GPIO as GPIO
 import time
 import threading
 
-LED_PIN = 17  # GPIO17 (physical pin 11)
+LED_PIN = 27  # GPIO27 (physical pin 13), GPIO17 IS USED BY THE WITTY PI
 
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(LED_PIN, GPIO.OUT)
